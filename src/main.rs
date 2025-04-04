@@ -5,8 +5,8 @@
 
 
 use jwalk::{WalkDir, Parallelism};
-//use std::fs;
-use std::fs::{File};
+use std::fs;
+use std::fs::File;
 use std::io::{prelude::*, BufReader};
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
@@ -15,6 +15,7 @@ use chrono::{offset::TimeZone, NaiveDateTime, DateTime, Local};
 use regex::Regex;
 use xml::common::Position;
 use xml::reader::{ParserConfig, XmlEvent};
+//use rand::Rng;
 //use postgres::{Client, NoTls};
 
 extern crate rev_buf_reader;
@@ -26,7 +27,7 @@ use rev_buf_reader::RevBufReader;
     fn log_parser()-> Vec<String> {
 
   
-    let _guard = sentry::init(("https://00b@sentry.ru/795", 
+    let _guard = sentry::init(("https://url.ru", 
     sentry::ClientOptions {
             release: sentry::release_name!(),
             traces_sample_rate: 0.2, //send 20% of transaction to sentry
@@ -39,8 +40,8 @@ use rev_buf_reader::RevBufReader;
         sentry::configure_scope(|scope| {
             scope.set_user(Some(sentry::User {
                 id: Some(111.to_string()),
-                email: Some("dima@host.ru".to_owned()),
-                username: Some("ium".to_owned()),                
+                email: Some("dima@yandex.ru".to_owned()),
+                username: Some("dima".to_owned()),                
                 ..Default::default()
             }));
            scope.set_tag("ftpUploader log", &hostname);
@@ -56,10 +57,27 @@ use rev_buf_reader::RevBufReader;
         sentry::capture_message("Im start!", sentry::Level::Info);
    
 
-    let interval:i64 = 600; //get log records last 10 min
+    //argv key for interval log records
+    let interval:i64  = match std::env::args().nth(4).as_deref() {
+    Some(val) => val.parse::<i64>().unwrap_or(3600),
+    None => 600, //default 10 min
+    };
+
     let log_interval:u64 = 600; //if log not update > 600 sec
     let file_log = PathBuf::from(r"/app/ftpUpload/logs/log");
     let pitstop:bool = Path::new("/app/pitstop").try_exists().expect("Can't check pitstop file");
+    
+    //get value from external file for path-time settings
+    let file_data = fs::read_to_string("/app/config_time.csv").expect("The external file time could not be read");
+    let mut hash_map_time:HashMap<&str, u64> = HashMap::new();
+    for line in file_data.lines() {
+        let index_sub = line.find(";").unwrap();
+        let path_config_time = &line[..index_sub];
+        let second_config_time_str = &line[index_sub + 1..];
+        let second_config_time_int:u64 = second_config_time_str.parse().expect("Not a valid number");
+        hash_map_time.insert(path_config_time, second_config_time_int);
+    }
+    
     let mut sli:f32 = rand::random_range(99.95..100.00);
     let time_file_log = file_log.metadata().unwrap().modified();
     let _last_modified_file_log = time_file_log.expect("REASON").elapsed().unwrap();
@@ -139,11 +157,14 @@ use rev_buf_reader::RevBufReader;
                             
                         if !srcdir.contains("/dev/null") {
                             hash_map_srcdir.insert(names.to_string(), srcdir.to_string());                            
-                            scores.insert("hostname=".to_owned() + &ftpserver + ",name=" + &names + " " + &srcdir + "/", 0);
-                        }   
+                        //если нужно передавать данные по неактивным агентам srcdir
+                          scores.insert("hostname=".to_owned() + &ftpserver + ",name=" + &names + " " + &srcdir + "/", 0);
+                        }  
+                        
                         if !dstdir.contains("/dev/null") {
                             hash_map_dstdir.insert(names.to_string(), dstdir.to_string());
-                            scores.insert("hostname=".to_owned() + &ftpserver + ",name=" + &names + " " + &dstdir + "/", 0);
+                        //если нужно передавать данные по неактивным агентам dstdir
+                          scores.insert("hostname=".to_owned() + &ftpserver + ",name=" + &names + " " + &dstdir + "/", 0);
                         }
                         
                         }
@@ -176,19 +197,14 @@ use rev_buf_reader::RevBufReader;
         None => 1,
            _ => 1,
     };
-    /*
-    println!("{}", &_agent_dir);  
-    */
-     
-    //println!("{} {} {} {}", _date_time, _agent_name, _dir_name, _agent_dir);
-    
 
     //argv key in second for older files
-    let oldfiles:u64  = match std::env::args().nth(2).as_deref() {
-        Some(val) => val.parse::<u64>().unwrap_or(3600),
-        None => 1800,
+    let mut oldfiles:u64  = match std::env::args().nth(2).as_deref() {
+                Some(val) => val.parse::<u64>().unwrap_or(1800),
+                None => 2000,
+        
+            };     
 
-    };
     
     //argv key for type directory
     let in_out_key:i8  = match std::env::args().nth(3).as_deref() {
@@ -222,6 +238,9 @@ if _sec_mttime_file_log > log_interval{
     }
 
 
+
+
+
     //let now = Local::now().naive_local();
     //let mut previous_hour:u8 = now.hour().try_into().unwrap();
     
@@ -231,6 +250,7 @@ if _sec_mttime_file_log > log_interval{
     
     
     let mut scores_end:HashMap<String, i64> = HashMap::new();
+    let mut scores_size:HashMap<String, i64> = HashMap::new();
     let max_depth: usize = 1;
     let parent_in = String::from("/data/in/");
     let parent_out = String::from("/data/out/");
@@ -244,7 +264,9 @@ if _sec_mttime_file_log > log_interval{
     //let f = BufReader::new(input);         
     let f = RevBufReader::new(input); 
     //let mut re = Regex::new(r"([^,]*)([^\[]*\[)(.*)(\][^']+')([^']*\/)(.*'\s(t|to)\s\')([^']*\/)(.*)$").unwrap();
-    let mut re = Regex::new(r"([^,]*)([^\[]*\[)(.*)(\][^']+')([^']*/)(.*'\s(t|to)\s')([^']*/)(.*)$").unwrap();
+    
+    // in_out_key == 1
+    let mut re = Regex::new(r"^([^,]*)([^\[]*\[)(.*)(\][^']+')([^']*/)(.*'\s(t|to)\s')([^']*/)([^']*)(.*(size:|sz)\s)(\d+)$").unwrap();
     
     if in_out_key == 2 {
            re = Regex::new(r"([^,]*)([^\[]*\[)(.*)(\][^']+')([^']*CDR\/IN[^']*\/)(.*')(.*)").unwrap();
@@ -280,15 +302,11 @@ if _sec_mttime_file_log > log_interval{
         }
 
         
-    if re3.is_match(&line_r){
-
-        
+    if re3.is_match(&line_r){       
             
             let l_index = line_r.find("]").expect("No find index in string");  
             let f_index = line_r.find("[").expect("No find index in string");
             let a_name_slice = &line_r[f_index + 1..l_index];
-
-            
 
             let error_agent_ftpserver = hash_map_server.get(a_name_slice).unwrap_or(&binding);
             let error_agent_srcdir = hash_map_srcdir.get(a_name_slice).unwrap_or(&binding);     
@@ -297,6 +315,8 @@ if _sec_mttime_file_log > log_interval{
                 line_r = String::from(l_slice); 
         }    
       
+
+
 
 //match for statistic and sli
     match re.captures(&line_r) { 
@@ -319,6 +339,14 @@ if _sec_mttime_file_log > log_interval{
         let _host_name_tmp = caps.get(4).unwrap().as_str();
         let _dir_name = caps.get(5).unwrap().as_str();
         let  dir_name_to = caps.get(8).unwrap().as_str();
+        //let  file_name = caps.get(9).unwrap().as_str();
+        let file_size_str = caps.get(12).unwrap().as_str();
+        let file_size_int: i64 = file_size_str.parse().unwrap();
+
+        scores_size.entry(_agent_name.to_string()).and_modify(|count| *count += file_size_int).or_insert(file_size_int);
+
+
+        
         
         let mut _host_name = "localhost";
     if _host_name_tmp.contains("] done ip"){
@@ -396,11 +424,9 @@ if _sec_mttime_file_log > log_interval{
 
     span_log.finish();
 
-
-
-// read hash map  
+// read agent hash map  
 if scores.is_empty(){
-           print_data = "q".to_owned() +&hostname+ ",name=hashmap,dir=/app/ftpUpload/logs/log ok=0,bad=0,log=0,sli=100";
+           print_data = "q".to_owned() +&hostname+ ",name=hashmap,dir=/app/ftpUpload/logs/log ok=0,bad=0,size=0,log=0,sli=100";
            output_string.push(String::from(&print_data));
 }
 
@@ -428,30 +454,35 @@ else{
                 for file in entries {
                     if file.as_path().exists() && file.metadata().unwrap().is_file() {
                 */                        
-                    
+
                
       //recursive directory on
       let span_dir = transaction.start_child("check directory", "check directory on older files");
 
+
+
 if !path_hash.contains("/dev/null") {
+
   for file in WalkDir::new(path_hash).parallelism(Parallelism::RayonNewPool(10)).max_depth(max_depth).into_iter().filter_map(|file| file.ok()) {
         
         if file.path().exists() && file.metadata().expect("no file found for get metadata").is_file() {
             let time = file.metadata().expect("error get metadata").accessed();
             let _last_modified = time.expect("duration atime error").elapsed().unwrap();
-            let _one_sec = Duration::as_secs(&_last_modified);
+            let one_sec = Duration::as_secs(&_last_modified);
  
-           // println!("{} {:?} {}  -- {} -- all", file.path().display(), &_last_modified, _one_sec, _str_hash_key);
+    
+      if hash_map_time.contains_key(path_hash){
+             oldfiles = hash_map_time.get(&path_hash).map(|&x| x as u64).unwrap_or(2500);
+        }
 
-       if _one_sec > oldfiles  {        
-          // println!("{} {:?} {} {} -- old", file.path().display(), &_last_modified, _one_sec, _str_hash_key);
+       if one_sec > oldfiles  {   
             scores_end.entry(_str_hash_key.clone()).and_modify(|count| *count += 1).or_insert(1);
         }
 
           
         else if !scores_end.contains_key(&_str_hash_key){
             scores_end.insert(_str_hash_key.clone(), 0);
-            //println!("{} {:?} {}  | {}", file.path().display(), &_last_modified, _one_sec, _str_hash_key);
+            //println!("{} {:?} {}  | {}", file.path().display(), &_last_modified, one_sec, _str_hash_key);
         }
 
 
@@ -486,13 +517,20 @@ for (ekey, evalue) in &scores_end {
             let agent_host_name = _agent_string.replace("hostname=", "");
             let agent_host_name = agent_host_name.replace("name=", "");
             let (_, agent_name) = agent_host_name.split_once(",").unwrap();
+
+            let mut sum_file_size = String::from("0");
+        if scores_size.contains_key(agent_name) {
+                sum_file_size = scores_size.get(agent_name).expect("cannot make int to string").to_string();
+        }
+           
         
             let _path_string = caps_string.get(2).unwrap().as_str();
             let _files_inlog_string = caps_string.get(3).unwrap().as_str();
             let files_inlog_int: i64 = _files_inlog_string.parse().unwrap();
             let mut stream_type = "sli"; 
+
             
-        //удаляем агентов, которые есть в текущем лог-файле
+        //удаляем агентов, которые есть в текущем лог-файле -> подставляем только агентов с значением 0 для файлов на текущий запуск
         if hash_map_type.contains_key(agent_name) {
             hash_map_type.remove(agent_name);
         }  
@@ -524,7 +562,7 @@ for (ekey, evalue) in &scores_end {
             if !pitstop {
                 sli = 100.0;
             }
-                print_data = "q".to_owned() +&hostname+ "," +_agent_string+ ",dir=" +_path_string+ " ok=" +&files_inlog_int.to_string()+ ",bad=" +&evalue.to_string()+ "," +stream_type+ "=" +&sli.to_string();
+                print_data = "q".to_owned() +&hostname+ "," +_agent_string+ ",dir=" +_path_string+ " ok=" +&files_inlog_int.to_string()+ ",bad=" +&evalue.to_string()+ ",size="+&sum_file_size+ "," +stream_type+ "=" +&sli.to_string();
                 output_string.push(String::from(&print_data)); 
 
                 //fs::write("/app/obss_log.txt", &print_data).expect("Unable to write file");
@@ -536,7 +574,7 @@ for (ekey, evalue) in &scores_end {
             if !pitstop{
                 sli = 0.0;
             }
-                print_data = "q".to_owned() +&hostname+ "," +_agent_string+ ",dir=" +_path_string+ " ok=" +&files_inlog_int.to_string()+ ",bad=" +&evalue.to_string()+ "," +stream_type+ "=" +&sli.to_string();
+                print_data = "q".to_owned() +&hostname+ "," +_agent_string+ ",dir=" +_path_string+ " ok=" +&files_inlog_int.to_string()+ ",bad=" +&evalue.to_string()+ ",size="+&sum_file_size+ "," +stream_type+ "=" +&sli.to_string();
                 output_string.push(String::from(&print_data));
                // let _ =  conn.execute("INSERT INTO aggregation (host, hostname, name, dir, bad, type) values ($1, $2, $3, $4, $5, $6) ON CONFLICT (dir) DO NOTHING", &[&hostname, &agent_host, &agent_name, &_path_string, evalue, &stream_type],); 
                 //fs::write("/app/obss_log.txt", &print_data).expect("Unable to write file");
@@ -549,7 +587,7 @@ for (ekey, evalue) in &scores_end {
                     sli = 100.0 - (*evalue as f32 / files_inlog_int as f32 * 100.0);
             }        
 
-                print_data = "q".to_owned() +&hostname+ "," +_agent_string+ ",dir=" +_path_string+ " ok=" +&files_inlog_int.to_string()+ ",bad=" +&evalue.to_string()+ "," +stream_type+ "=" +&sli.to_string();
+                print_data = "q".to_owned() +&hostname+ "," +_agent_string+ ",dir=" +_path_string+ " ok=" +&files_inlog_int.to_string()+ ",bad=" +&evalue.to_string()+ ",size="+&sum_file_size+ "," +stream_type+ "=" +&sli.to_string();
                 output_string.push(String::from(&print_data));
                // let _ =  conn.execute("INSERT INTO aggregation (host, hostname, name, dir, bad, type) values ($1, $2, $3, $4, $5, $6) ON CONFLICT (dir) DO NOTHING", &[&hostname, &agent_host, &agent_name, &_path_string, evalue, &stream_type],); 
                 //fs::write("/app/obss_log.txt", &print_data).expect("Unable to write file");
@@ -562,7 +600,7 @@ for (ekey, evalue) in &scores_end {
                       
             
         if key1 == 2 && evalue > &0 {
-            print_data = "q".to_owned() +&hostname+ "," +_agent_string+ ",dir=" +_path_string+ " ok=" +&files_inlog_int.to_string()+ ",bad=" +&evalue.to_string()+ "," +stream_type+ "=0";
+            print_data = "q".to_owned() +&hostname+ "," +_agent_string+ ",dir=" +_path_string+ " ok=" +&files_inlog_int.to_string()+ ",bad=" +&evalue.to_string()+ ",size="+&sum_file_size+ "," +stream_type+ "=0";
             output_string.push(String::from(&print_data));
            // let _ =  conn.execute("INSERT INTO aggregation (host, hostname, name, dir, bad, type) values ($1, $2, $3, $4, $5, $6) ON CONFLICT (dir) DO NOTHING", &[&hostname, &agent_host, &agent_name, &_path_string, evalue, &stream_type],); 
             //fs::write("/app/obss_log.txt", &print_data).expect("Unable to write file");
@@ -573,7 +611,7 @@ for (ekey, evalue) in &scores_end {
             } 
             
         if in_out_key == 4{
-            print_data = "q".to_owned() +&hostname+ "," +_agent_string+ ",dir=" +_path_string+ " ok=" +&files_inlog_int.to_string()+ "i,bad=0," +stream_type+ "=0";
+            print_data = "q".to_owned() +&hostname+ "," +_agent_string+ ",dir=" +_path_string+ " ok=" +&files_inlog_int.to_string()+ "i,bad=0,size="+&sum_file_size+ ","+stream_type+ "=0";
             output_string.push(String::from(&print_data));
             //fs::write("/app/obss_log.txt", &print_data).expect("Unable to write file");
             //println!("{}", &print_data);
@@ -622,7 +660,6 @@ output_string
 
 
 }
-
 
 fn main(){
     let duration_since_epoch = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
